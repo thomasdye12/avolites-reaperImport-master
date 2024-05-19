@@ -1,0 +1,16 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/.vs
+/TitanImport/obj/Release/netstandard2.0
+/TitanImport/bin/Debug/netstandard2.0
+/TitanImport/obj
+/TitanImport/bin/Release/netstandard2.0
+/TitanImport/publish
+
+# Include Github Pages DLL's
+!/_framework/*/*.dll
+/TitanImport/bin/Release/netstandard2.1
+/TitanImport/bin/Debug/netstandard2.1/wwwroot/_framework
+/TitanImport/bin/Debug/netstandard2.1

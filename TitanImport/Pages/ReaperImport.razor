@@ -1,0 +1,398 @@
+﻿@page "/"
+@using System.IO;
+@using Blazor.FileReader;
+@using Microsoft.AspNetCore.WebUtilities;
+@using System.Net.Http.Json;
+@inject NavigationManager navigationManager;
+@inject HttpClient Http;
+@inject IFileReaderService fileReaderService;
+
+<h5>TDS CSV Import</h5>
+
+@if (!hideConsoleAddress || !string.IsNullOrEmpty(connectionError))
+{
+    <div class="alert alert-@(playbacks != null ? "success" : "primary")">
+
+        <div class="form-group">
+            <label for="ipAddress">Console IP Address:</label>
+            <div class="input-group" id="ipAddress">
+                <input type="text" @bind="consoleAddress" />
+                <button class="btn btn-primary" @onclick="@(()=> Connect())">Connect</button>
+            </div>
+        </div>
+
+        @if (!string.IsNullOrEmpty(connectionError))
+        {
+            <div class="alert alert-danger">
+                @connectionError
+            </div>
+        }
+    </div>
+}
+
+
+
+
+    @if (playbacks != null)
+    {
+        <div class="alert alert-@(csvLines.Count() > 0 ? "success":"primary")">
+            <label for="reaperFile">Please select the  CSV to import:</label>
+            <div class="input-group mb-3" id="reaperFile">
+                <input type="file" @ref="@inputTypeFileElement" />
+                <select class="btn btn-primary mb-3" @bind="reaperFPS">
+                    <option value="100" selected >100 FPS</option>
+                    <option value="60">60 FPS</option>
+                    <option value="50">50 FPS</option>
+                    <option value="30">30 FPS</option>
+                    <option value="25">25 FPS</option>
+                    <option value="24">24 FPS</option>
+                </select>
+                &nbsp;
+            <div class="form-group">
+                     &nbsp;
+            <label for="CueStartNumber">Cue Start Number</label>
+            <div class="input-group" id="CueStartNumber">
+                <input type="text" @bind="CueStartNumber" />
+            </div>
+                     &nbsp;
+        <label for="CueStartNumber">Cue Fade Time</label>
+            <div class="input-group" id="CueFadeTime">
+                <input type="text" @bind="CueFadeTime" />
+            </div>
+        </div>
+         &nbsp;
+
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="addCueTypeCheckbox" @bind="AddCueTypeToName" />
+            <label class="form-check-label" for="addCueTypeCheckbox">Add cue type to name</label>
+        </div>
+         &nbsp;
+
+                <button class="btn btn-primary mb-3" @onclick="@ReadFile">Load</button>
+            </div>
+        </div>
+
+        @if (csvLines.Count() > 0)
+        {
+            <div class="alert alert-@(importError == string.Empty ? "success":"primary")">
+                <label for="reaperFile">Please select the cue list to apply the timecode to:</label>
+                <div class="input-group mb-3">
+                    <select class="form-control" @bind="selectedPlaybackId">
+                        <option value="" selected disabled hidden>--- Choose Cue List ---</option>
+                        @foreach (var playback in playbacks.Where(playback => playback.type == "cueListHandle"))
+                        {
+                            <option value="@playback.titanId">@playback.Legend</option>
+                        }
+                    </select>
+                    <button class="btn btn-secondary ml-3" @onclick="@(()=> Connect(true))">Refresh</button>
+                    <button class="btn btn-primary ml-3" @onclick="@Import">Import</button>
+                </div>
+                @if (!string.IsNullOrEmpty(importError))
+                {
+                    <div class="alert alert-danger">
+                        @importError
+                    </div>
+                }
+            </div>
+
+            <table class="table">
+                <tr>
+                    <th>Cue</th>
+                    <th>Legend</th>
+                    <th>Fade</th>
+                    <th>Timecode</th>
+                     <th>Type</th>
+                </tr>
+                @foreach (var cue in csvLines)
+                {
+                    <tr>
+                        <td>@cue.Id</td>
+                        <td>@cue.Name</td>
+                        <td>@cue.Fadetime</td>
+                        <td>@FormatTimecode(cue.Timecode,reaperFPS)</td>
+                        <td>@cue.Colour</td>
+                    </tr>
+                }
+            </table>
+        }
+    }
+
+    @code {
+        ElementReference inputTypeFileElement;
+
+        string consoleAddress = "desk1.avo.thomasdye.net";
+        string CueStartNumber = "0";
+        string CueFadeTime = "2";
+        bool hideConsoleAddress = false;
+        bool AddCueTypeToName = false;
+
+        List<ReaperCue> csvLines = new List<ReaperCue>();
+        Handle[] playbacks = null;
+        int selectedPlaybackId = 0;
+        string connectionError = string.Empty;
+        int reaperFPS = 30;
+
+        Version titanVersion;
+
+        protected string FormatApiRequest(string scriptUrl)
+        {
+            if (consoleAddress.Contains(":"))
+            {
+                return $"http://{consoleAddress}/titan/{scriptUrl}";
+            }
+            else
+            {
+                return $"http://{consoleAddress}:4430/titan/{scriptUrl}";
+            }
+
+        }
+
+        protected override async Task OnInitializedAsync()
+        {
+            var uri = navigationManager.ToAbsoluteUri(navigationManager.Uri); //you can use IURIHelper for older versions
+
+            if (QueryHelpers.ParseQuery(uri.Query).TryGetValue("apiUrl", out var url))
+            {
+                consoleAddress = url;
+                hideConsoleAddress = true;
+            }
+
+            Connect(true);
+        }
+
+        public async Task Connect(bool silent = false)
+        {
+            try
+            {
+                playbacks = await Http.GetFromJsonAsync<Handle[]>(FormatApiRequest("handles/Playbacks"));
+
+                if (selectedPlaybackId == 0 && playbacks.Any())
+                    selectedPlaybackId = playbacks.First().titanId;
+
+                string version = await Http.GetFromJsonAsync<string>(FormatApiRequest("get/2/System/SoftwareVersion"));
+                titanVersion = Version.Parse(version.Split(' ')[0]);
+            }
+            catch (Exception ex)
+            {
+                if(!silent)
+                    connectionError = $"Unable to connect to Titan console at address '{consoleAddress}'.";
+            }
+
+            StateHasChanged();
+        }
+
+        public async Task ReadFile()
+        {
+            csvLines.Clear();
+            foreach (var file in await fileReaderService.CreateReference(inputTypeFileElement).EnumerateFilesAsync())
+            {
+                // Read into buffer and act (uses less memory)
+                using (StreamReader stream = new StreamReader(await file.OpenReadAsync()))
+                {
+                    //Ignore Header
+                    string header = await stream.ReadLineAsync();
+                  Console.WriteLine("CueStartNumber: " + CueStartNumber);
+                    Console.WriteLine("Header: " + header);
+
+                    string line = await stream.ReadLineAsync();
+                    while (!string.IsNullOrEmpty(line))
+                    {
+                        string[] csvParts = line.Split(',');
+                    // if the csv is grater then 4 then its a CVS V2 file 
+                    if (csvParts.Length > 4)
+                    {
+                        Console.WriteLine("V2 File");
+                        var cue = new ReaperCue()
+                        {
+                            Id = TrimQuotes(csvParts[3]),
+                            Name = TrimQuotes(csvParts[4]),
+                            Timecode = FormatTimecode(TrimQuotes(csvParts[2])),
+                            Colour = TrimQuotes(csvParts[1]),
+                            Fadetime = SetFadeTime(TrimQuotes(csvParts[5]), CueFadeTime)
+                        };
+                        cue.Id = cue.AddStringsAndConvert(CueStartNumber, TrimQuotes(csvParts[3]));
+                        if (AddCueTypeToName)
+                        {
+                            cue.Name = $"{TrimQuotes(csvParts[1])}- {TrimQuotes(csvParts[4])}";
+                        }
+                         csvLines.Add(cue);
+                    
+                    }
+                    else
+                    {
+                        Console.WriteLine("V1 File");
+                        var cue = new ReaperCue()
+                        {
+                            Id = csvParts[0],
+                            @* Id = AddStringsAndConvert(CueStartNumber, csvParts[0]), *@
+                            Name = csvParts[1],
+                            Timecode = FormatTimecode(csvParts[2])
+                        };
+
+                           cue.Id = cue.AddStringsAndConvert(CueStartNumber, csvParts[0]);
+                        if (csvParts.Length > 3)
+                            cue.Colour = csvParts[3];
+
+                        csvLines.Add(cue);
+
+                      
+                    }
+                      Console.WriteLine("new line");
+                      line = await stream.ReadLineAsync();
+                 }
+                }
+            }
+        }
+
+        private TimeSpan FormatTimecode(string time)
+        {
+            // works fine for 00:23:03:00 not for "00:08:03:11"
+
+            List<string> timecodeParts = time.Split(new char[] { ':', '.' }).ToList();
+            if (timecodeParts.Count == 3)
+            {
+                timecodeParts.Insert(0, "0");
+
+            }
+
+            if (timecodeParts.Count < 4)
+                return TimeSpan.Zero;
+                Console.WriteLine("time span");
+            TimeSpan t = new TimeSpan(0,int.Parse(timecodeParts[0]), int.Parse(timecodeParts[1]), int.Parse(timecodeParts[2]), int.Parse(timecodeParts[3]));
+    Console.WriteLine("time span1");
+            return t;
+        }
+
+        private TimeSpan NormalizeTo100FPS(TimeSpan time)
+        {
+            TimeSpan normalized;
+            switch (reaperFPS)
+            {
+                case 30:
+                    normalized = new TimeSpan(time.Days, time.Hours, time.Minutes, time.Seconds,(int) ((float)time.Milliseconds * (100f / 30f)));
+                    break;
+                default:
+                    normalized = time;
+                    break;
+            }
+
+            return normalized;
+        }
+
+        private string FormatTimecode(TimeSpan time, int fps)
+        {
+            if(fps > 0)
+                return $"{time.Hours.ToString("00")}:{time.Minutes.ToString("00")}:{time.Seconds.ToString("00")}.{time.Milliseconds.ToString("00")}/{fps}";
+
+            return $"{time.Hours.ToString("00")}:{time.Minutes.ToString("00")}:{time.Seconds.ToString("00")}.{time.Milliseconds.ToString("00")}";
+        }
+            // function for setting the fadetime if the value is 0 use the default value
+    public string SetFadeTime(string input, string defaultvalue)
+    {
+        // just work out if its 0 then use the default value
+        if (input == "0")
+        {
+            return defaultvalue;
+        }
+        else
+        {
+            return input;
+
+        }
+    }
+private string TrimQuotes(string input)
+{
+    if (string.IsNullOrEmpty(input))
+    {
+        return input;
+    }
+
+    // Check if the string starts and ends with a quote mark
+    if (input.StartsWith("\"") && input.EndsWith("\""))
+    {
+        // Trim off the quote marks
+        return input.Substring(1, input.Length - 2);
+    }
+    else
+    {
+        // If no quote marks are found, return the input string as is
+        return input;
+    }
+}
+
+        private string importError = null;
+
+        public async Task Import()
+        {
+            try
+            {
+                foreach (var cue in csvLines)
+                {
+                    int cueNumber = int.Parse(cue.Id.Trim('M'));
+
+                    if (!await Http.GetFromJsonAsync<bool>(FormatApiRequest($"script/2/Playbacks/DoesCueExist?handle_titanId={selectedPlaybackId}&cueNumber={cueNumber}")))
+                    {
+                        await Http.GetAsync(FormatApiRequest($"script/2/Playbacks/AppendOrInsertPlaybackCue?handle_titanId={selectedPlaybackId}&cueNumber={cueNumber}"));
+                    }
+
+
+                    await Http.GetAsync(FormatApiRequest($"script/2/Playbacks/SetCueLegend?handle_titanId={selectedPlaybackId}&cueNumber={cueNumber}&newLegend={cue.Name}"));
+                    await Http.GetAsync(FormatApiRequest($"script/2/Timecode/SetCueTimecodeWithCueNumber?handle_titanId={selectedPlaybackId}&cueNumber={cueNumber}&time={FormatTimecode(cue.Timecode, reaperFPS).Replace("/", "%2F")}"));
+                }
+                importError = string.Empty;
+            }
+            catch (Exception ex)
+            {
+                importError = ex.Message;
+            }
+        }
+
+        class ReaperCue
+        {
+            public string Id { get; set; }
+
+            public string Name { get; set; }
+
+            public TimeSpan Timecode { get; set; }
+
+            public string Colour { get; set; }
+             
+            public string Fadetime { get; set; }
+        
+
+
+    public string AddStringsAndConvert(string input1, string input2)
+    {
+        // Remove the first character if it's a letter
+        string numberString1 = input1.TrimStart('M'); // Assuming the letter to remove is 'm'
+        string numberString2 = input2.TrimStart('M'); // Adjust accordingly if it varies
+
+        // Convert the strings to numbers
+        if (int.TryParse(numberString1, out int number1) && int.TryParse(numberString2, out int number2))
+        {
+            // Add the numbers together
+            int sum = number1 + number2;
+
+            // Convert the sum back to a string and return it
+            return sum.ToString();
+        }
+        else
+        {
+            // Handle the case where conversion fails, perhaps due to invalid input
+            throw new InvalidOperationException("Invalid input: cannot convert to number.");
+        }
+    }
+        }
+
+        class Handle
+        {
+            public int titanId { get; set; }
+            public string type { get; set; }
+            public string Legend { get; set; }
+
+        }
+
+
+
+    }
+
